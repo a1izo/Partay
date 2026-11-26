@@ -19,6 +19,9 @@ public class OpenApiConfig {
                         and the Spotify Web API over REST. T3 stores rows in MySQL.
 
                         Guests identify themselves with the X-Guest-Id header (the guestId returned when \
-                        creating or joining a party). No accounts."""));
+                        creating or joining a party). No accounts.
+
+                        Hosts log in with Spotify (GET /api/auth/login, open it in a browser) and send the \
+                        returned hostSessionId in the X-Host-Session header."""));
     }
 }

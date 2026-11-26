@@ -5,6 +5,7 @@ import dk.via.partay.app.spotify.MockSpotifyClient;
 import dk.via.partay.app.spotify.SpotifyAuthClient;
 import dk.via.partay.app.spotify.SpotifyClient;
 import dk.via.partay.app.spotify.SpotifyProperties;
+import dk.via.partay.app.spotify.SpotifyUserClient;
 import dk.via.partay.app.trace.TraceRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,5 +35,11 @@ public class SpotifyConfig {
         RestClient restClient = builder.uriBuilderFactory(uris).build();
         log.info("[T2] Spotify mode: live ({})", props.apiUrl());
         return new LiveSpotifyClient(restClient, new SpotifyAuthClient(restClient, props, traces), traces);
+    }
+
+    /** Host login calls. They always go to Spotify, also when spotify.mode=mock. */
+    @Bean
+    public SpotifyUserClient spotifyUserClient(SpotifyProperties props, RestClient.Builder builder, TraceRecorder traces) {
+        return new SpotifyUserClient(builder.build(), props, traces);
     }
 }

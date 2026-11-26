@@ -35,11 +35,16 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         return !path.startsWith("/api/") || path.startsWith("/api/debug");
     }
 
+    /** The OAuth callback carries the one-time login code and state, so its query stays out of logs and traces. */
+    private static String queryForLog(HttpServletRequest request) {
+        return request.getRequestURI().startsWith("/api/auth/callback") ? "[redacted]" : request.getQueryString();
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String method = request.getMethod();
-        String path = request.getRequestURI() + (request.getQueryString() == null ? "" : "?" + request.getQueryString());
+        String path = request.getRequestURI() + (request.getQueryString() == null ? "" : "?" + queryForLog(request));
         boolean traced = !"1".equals(request.getHeader("X-Partay-Poll"));
         long start = System.nanoTime();
         log.info("[T2] REST <- {} {}", method, path);

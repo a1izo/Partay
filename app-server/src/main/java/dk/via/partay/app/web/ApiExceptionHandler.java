@@ -4,6 +4,7 @@ import dk.via.partay.app.error.BadRequestException;
 import dk.via.partay.app.error.ConflictException;
 import dk.via.partay.app.error.ForbiddenException;
 import dk.via.partay.app.error.NotFoundException;
+import dk.via.partay.app.error.UnauthorizedException;
 import dk.via.partay.app.error.UpstreamException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -32,6 +33,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<ProblemDetail> notFound(NotFoundException e, HttpServletRequest req) {
         return problem(HttpStatus.NOT_FOUND, e.getMessage(), req);
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ProblemDetail> unauthorized(UnauthorizedException e, HttpServletRequest req) {
+        return problem(HttpStatus.UNAUTHORIZED, e.getMessage(), req);
     }
 
     @ExceptionHandler(ForbiddenException.class)
