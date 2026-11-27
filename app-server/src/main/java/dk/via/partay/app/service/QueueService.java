@@ -8,6 +8,7 @@ import dk.via.partay.app.grpc.DataClient;
 import dk.via.partay.app.model.PartyView;
 import dk.via.partay.app.model.QueueItemView;
 import dk.via.partay.app.model.RankedItem;
+import dk.via.partay.app.playlist.PartyPlaylistService;
 import dk.via.partay.app.spotify.SpotifyClient;
 import dk.via.partay.app.spotify.TrackInfo;
 import dk.via.partay.app.trace.TraceRecorder;
@@ -30,14 +31,16 @@ public class QueueService {
     private final PartyService parties;
     private final Cache<String, TrackInfo> trackCache;
     private final TraceRecorder traces;
+    private final PartyPlaylistService playlists;
 
     public QueueService(DataClient data, SpotifyClient spotify, PartyService parties,
-                        Cache<String, TrackInfo> trackCache, TraceRecorder traces) {
+                        Cache<String, TrackInfo> trackCache, TraceRecorder traces, PartyPlaylistService playlists) {
         this.data = data;
         this.spotify = spotify;
         this.parties = parties;
         this.trackCache = trackCache;
         this.traces = traces;
+        this.playlists = playlists;
     }
 
     public record Queue(PartyView party, List<RankedItem> items) {
@@ -60,11 +63,26 @@ public class QueueService {
             trackCache.put(trackId, track);
         }
 
+        QueueItemView item;
         try {
-            return data.addQueueItem(member.party().id(), track.spotifyTrackId(), track.title(), track.artist(),
+            item = data.addQueueItem(member.party().id(), track.spotifyTrackId(), track.title(), track.artist(),
                     track.album(), track.durationMs(), member.guest().id());
         } catch (ConflictException e) {
             throw new ConflictException("This song is already in the queue");
+        }
+        addToPlaylist(member.party().id(), trackId);
+        return item;
+    }
+
+    /** The queue in Partay is the source of truth: a Spotify failure is logged and the queue item stays. */
+    private void addToPlaylist(long partyId, String trackId) {
+        long start = System.nanoTime();
+        try {
+            playlists.addTrack(partyId, trackId);
+        } catch (RuntimeException e) {
+            log.warn("[T2] could not add track {} to the Spotify playlist of party {}: {}", trackId, partyId,
+                    e.getMessage());
+            traces.hop("SPOTIFY", "playlist add " + trackId, "FAILED", (System.nanoTime() - start) / 1_000_000);
         }
     }
 
