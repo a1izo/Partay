@@ -15,9 +15,15 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
 /**
  * Spotify calls made on behalf of a logged-in host (Authorization Code with PKCE): the code exchange,
- * the token refresh and GET /me. No client secret is sent. Tokens are never logged.
+ * the token refresh, GET /me and the party playlist (create it, add tracks). No client secret is sent.
+ * Tokens are never logged.
  */
 public class SpotifyUserClient {
 
@@ -31,8 +37,15 @@ public class SpotifyUserClient {
     public record UserProfile(String id, String displayName, String product) {
     }
 
+    /** @param url the open.spotify.com link of the playlist */
+    public record Playlist(String id, String url) {
+    }
+
     private record Response(int status, String retryAfter, JsonNode body) {
     }
+
+    static final int MAX_URIS_PER_REQUEST = 100;
+    private static final Pattern SPOTIFY_ID = Pattern.compile("^[0-9A-Za-z]+$");
 
     private final RestClient restClient;
     private final SpotifyProperties props;
@@ -117,6 +130,76 @@ public class SpotifyUserClient {
         String product = r.body().hasNonNull("product") && !r.body().get("product").asText().isBlank()
                 ? r.body().get("product").asText() : null;
         return new UserProfile(id, displayName, product);
+    }
+
+    /** Creates a private playlist on the account of the token owner. Needs the playlist-modify-private scope. */
+    public Playlist createPlaylist(String accessToken, String name, String description) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", name);
+        body.put("description", description);
+        body.put("public", false);
+        Response r = postJson(accessToken, "POST /me/playlists", props.apiUrl() + "/me/playlists", body);
+        requireSuccess(r, "create the playlist");
+        if (!r.body().hasNonNull("id")) {
+            throw new UpstreamException(502, "Spotify did not return a playlist id");
+        }
+        String id = r.body().get("id").asText();
+        String url = r.body().path("external_urls").path("spotify").asText("https://open.spotify.com/playlist/" + id);
+        return new Playlist(id, url);
+    }
+
+    /** Appends tracks to a playlist, at most 100 per request. */
+    public void addTracks(String accessToken, String playlistId, List<String> trackIds) {
+        if (playlistId == null || !SPOTIFY_ID.matcher(playlistId).matches()) {
+            throw new IllegalArgumentException("Invalid playlist id");
+        }
+        for (int from = 0; from < trackIds.size(); from += MAX_URIS_PER_REQUEST) {
+            List<String> uris = trackIds.subList(from, Math.min(from + MAX_URIS_PER_REQUEST, trackIds.size()))
+                    .stream().map(id -> "spotify:track:" + id).toList();
+            String path = "/playlists/" + playlistId + "/items";
+            Response r = postJson(accessToken, "POST " + path, props.apiUrl() + path, Map.of("uris", uris));
+            requireSuccess(r, "add tracks to the playlist");
+        }
+    }
+
+    private Response postJson(String accessToken, String hop, String url, Object body) {
+        long start = System.nanoTime();
+        Response r;
+        try {
+            r = restClient.post()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .exchange((req, res) -> new Response(res.getStatusCode().value(),
+                            res.getHeaders().getFirst(HttpHeaders.RETRY_AFTER), LiveSpotifyClient.readJson(res)));
+        } catch (ResourceAccessException e) {
+            traces.hop("SPOTIFY", hop, "ERROR", (System.nanoTime() - start) / 1_000_000);
+            throw new UpstreamException(503, "Spotify unreachable: " + e.getMessage());
+        }
+        long ms = (System.nanoTime() - start) / 1_000_000;
+        log.info("[T2] HTTP -> Spotify {} {} ({} ms)", hop, r.status(), ms);
+        traces.hop("SPOTIFY", hop, String.valueOf(r.status()), ms);
+        return r;
+    }
+
+    private static void requireSuccess(Response r, String action) {
+        if (r.status() >= 200 && r.status() < 300) {
+            return;
+        }
+        String message = r.body().path("error").path("message").asText("");
+        String suffix = message.isEmpty() ? "" : ": " + message;
+        if (r.status() == 401) {
+            throw new UnauthorizedException("Spotify rejected the host token. Log in again at /api/auth/login");
+        }
+        if (r.status() == 403) {
+            throw new ForbiddenException("Spotify refused to " + action + suffix);
+        }
+        if (r.status() == 429) {
+            String wait = r.retryAfter() == null ? "?" : r.retryAfter();
+            throw new UpstreamException(503, "Spotify rate limit, retry in " + wait + " s");
+        }
+        throw new UpstreamException(502, "Spotify returned " + r.status() + " when trying to " + action + suffix);
     }
 
     private Response postToken(String grantType, MultiValueMap<String, String> form) {

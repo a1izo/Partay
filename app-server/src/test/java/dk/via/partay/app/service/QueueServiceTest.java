@@ -6,11 +6,13 @@ import dk.via.partay.app.error.BadRequestException;
 import dk.via.partay.app.error.ConflictException;
 import dk.via.partay.app.error.ForbiddenException;
 import dk.via.partay.app.error.NotFoundException;
+import dk.via.partay.app.error.UpstreamException;
 import dk.via.partay.app.grpc.DataClient;
 import dk.via.partay.app.model.GuestView;
 import dk.via.partay.app.model.PartyView;
 import dk.via.partay.app.model.QueueItemView;
 import dk.via.partay.app.model.VoteView;
+import dk.via.partay.app.playlist.PartyPlaylistService;
 import dk.via.partay.app.spotify.SpotifyClient;
 import dk.via.partay.app.spotify.TrackInfo;
 import dk.via.partay.app.trace.TraceRecorder;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -41,6 +44,7 @@ class QueueServiceTest {
     private DataClient data;
     private SpotifyClient spotify;
     private Cache<String, TrackInfo> trackCache;
+    private PartyPlaylistService playlists;
     private QueueService service;
 
     @BeforeEach
@@ -49,7 +53,8 @@ class QueueServiceTest {
         spotify = mock(SpotifyClient.class);
         trackCache = Caffeine.newBuilder().build();
         PartyService parties = new PartyService(data, new JoinCodeGenerator());
-        service = new QueueService(data, spotify, parties, trackCache, new TraceRecorder());
+        playlists = mock(PartyPlaylistService.class);
+        service = new QueueService(data, spotify, parties, trackCache, new TraceRecorder(), playlists);
 
         when(data.getPartyByJoinCode(CODE)).thenReturn(PARTY);
         when(data.getGuest(SOFIA_ID)).thenReturn(SOFIA);
@@ -138,5 +143,38 @@ class QueueServiceTest {
                 .thenThrow(new ConflictException("Duplicate entry"));
         ConflictException e = assertThrows(ConflictException.class, () -> service.addSong(CODE, SOFIA_ID, TRACK_ID));
         assertEquals("This song is already in the queue", e.getMessage());
+    }
+
+    @Test
+    void addSongAddsTheTrackToThePartyPlaylist() {
+        trackCache.put(TRACK_ID, BLINDING);
+        when(data.addQueueItem(anyLong(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyString()))
+                .thenReturn(ITEM);
+
+        service.addSong(CODE, SOFIA_ID, TRACK_ID);
+
+        verify(playlists).addTrack(1, TRACK_ID);
+    }
+
+    @Test
+    void aSpotifyFailureWhileAddingToThePlaylistKeepsTheQueueItem() {
+        trackCache.put(TRACK_ID, BLINDING);
+        when(data.addQueueItem(anyLong(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyString()))
+                .thenReturn(ITEM);
+        doThrow(new UpstreamException(502, "Spotify down")).when(playlists).addTrack(1, TRACK_ID);
+
+        QueueItemView added = assertDoesNotThrow(() -> service.addSong(CODE, SOFIA_ID, TRACK_ID));
+
+        assertEquals(ITEM, added);
+        verify(data).addQueueItem(1, TRACK_ID, "Blinding Lights", "The Weeknd", "After Hours", 200040, SOFIA_ID);
+    }
+
+    @Test
+    void aDuplicateSongIsNotSentToThePlaylist() {
+        trackCache.put(TRACK_ID, BLINDING);
+        when(data.addQueueItem(anyLong(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyString()))
+                .thenThrow(new ConflictException("Duplicate entry"));
+        assertThrows(ConflictException.class, () -> service.addSong(CODE, SOFIA_ID, TRACK_ID));
+        verifyNoInteractions(playlists);
     }
 }
